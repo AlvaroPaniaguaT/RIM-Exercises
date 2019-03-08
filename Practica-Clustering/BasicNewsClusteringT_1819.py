@@ -1,4 +1,4 @@
-import re, pprint, os, numpy
+import re, os, numpy
 import nltk
 import spacy
 import collections
@@ -10,6 +10,9 @@ from sklearn.metrics.cluster import adjusted_rand_score
 from TikaReader import TikaReader
 from tikapp import TikaApp
 from ProcessText import TextProcessor
+from lxml import html
+from newspaper import Article
+from textblob import TextBlob
 
 def cluster_texts(texts, clustersNumber, distance):
     #Load the list of texts into a TextCollection object.
@@ -40,109 +43,131 @@ def TF(document, unique_terms, collection):
         word_tf.append(collection.tf(word, document))
     return word_tf
 
-def parse_all_docs(list_files, folder):
-    Tika_Objects_List = list()
-
-    for filename in list_files:
-        print('Parsing', filename)
-        path_to_file = folder + '/' + filename
-        Tika_Objects_List.append(TikaReader(path_to_file, value=True))
-
-    return Tika_Objects_List
-
-def parse_texts_spaCy(Tika_objects_list):
+def parse_texts_spaCy(list_articles):
     # Traducir a inglés todos los textos
     nlp_dict = {
-        'es': (spacy.load('es'), spacy.lang.es.stop_words.STOP_WORDS),
-        'en': (spacy.load('en'), spacy.lang.en.stop_words.STOP_WORDS),
-        'de': (spacy.load('en'), spacy.lang.en.stop_words.STOP_WORDS)
+        'es': spacy.load('es_core_news_md'),
+        'en': spacy.load('en_core_web_md'),
+        'de': spacy.load('en_core_web_md')
     }
-    texts = list()
-    for tika_obj in Tika_objects_list:
-        text = tika_obj.get_title()
-        lang = tika_obj.get_language()
-        tuple_nlp = nlp_dict[lang]
 
-        t_processor = TextProcessor(text, tuple_nlp[1])
-        texts.append(t_processor.filter_stopwords())
-        
-        #nlp = nlp_dict[tika_obj.get_language()]
-        #doc = nlp(tika_obj.get_title())
-        #for ent in doc.ents:
-        #    print(ent.text, ent.label_)
-    test = cluster_texts(texts,6,'cosine')
+    texts = list()
+    for article_item in list_articles:
+        title = article_item['article'].text
+        text = article_item['article'].text.replace('\n', ' ')
+        # Translate all texts to english
+        translated = translate_to('en', text)
+        lang = article_item['lang']
+
+        # Process text = tokenize text removing punctuaction and remove stopwords
+        t_processor = TextProcessor(translated, 'en')
+        tokens = t_processor.process_text()
+
+        nlp = nlp_dict['en']
+        doc = nlp(text)
+
+
+        ents = filter_ner(doc)
+        tokens.extend(ents)
+        tokens.extend(ents)
+
+        texts.append(nltk.Text(tokens))
+
+    get_evaluation(texts)
+
+def translate_to(lang, text):
+    text_blob = TextBlob(text)
+    detected_lang = text_blob.detect_language()
+    if detected_lang != lang:
+        translated_text = text_blob.translate(to=lang)
+        return str(translated_text)
+    else:
+        return text
+
+def filter_ner(article):
+    # Filter named entities to only the one in the list
+    mantain_ners = ['LOC', 'ORG', 'PER']
+    ents = list()
+    for ent in article.ents:
+        if ent.label_ in mantain_ners:
+            ents.append(ent.text)
+
+    return list(set(ents))
+
+def get_entities(article):
+    # Get all entities in a list
+    labels = [x.text for x in article.ents]
+
+    return labels
+
+def get_evaluation(texts):
+
+    test = cluster_texts(texts, 6, 'cosine')
     print("test: ", test)
-    # Gold Standard
-    reference =[0, 4, 2, 2, 2, 3, 2, 2, 2, 1, 0, 0, 3, 3, 1, 2, 3, 0, 1, 1, 1, 1]
-    print("reference: ", reference)
+
+    # Gold Standard reference
+    reference =[0, 4, 2, 2, 2, 3, 2, 2, 2, 1, 0, 0, 3, 3, 1, 2, 3, 0, 1, 1, 5, 6]
+    r = '[0 4 2 2 2 3 2 2 2 1 0 0 3 3 1 2 3 0 1 1 5 6]'
+    print("ref : ", r)
 
     # Evaluation
     print("rand_score: ", adjusted_rand_score(reference,test))
 
 
+def extract_content(html_string):
+    xpaths = ['//article//p//text()', '//section//p//text()']
+    tree = html.fromstring(html_string)
+    text = ""
+    for xp in xpaths:
+        for item in tree.xpath(xp):
+            text += ' ' + item
+        if len(text) > 0:
+            break
+    
+    return text
         
-    #article = nlp(document)
+
+def read_file(filepath):
+    try:
+        f =  open(filepath, encoding="utf-8").read()
+    except Exception as e:
+        f =  open(filepath, encoding='latin-1').read()
+    
+    return f
+
+
+def read_news_content(list_files, folder):
+    list_of_articles = list()
+    for item_file in list_files:
+        print("Parsing file --> " + item_file)
+        full_path = folder + '/' + item_file
+        tika_obj = TikaReader(full_path)
+        new_article = Article(full_path)
+        content = read_file(full_path)
+        new_article.set_html(content)
+        new_article.parse()
+
+        # If text not parsed automatically test with two XPATHS selectors
+        if len(new_article.text) == 0:
+            content = extract_content(new_article.html)
+            new_article.set_text(content)
+            
+        list_of_articles.append({
+            'article': new_article,
+            'lang': tika_obj.get_language()
+        })
+    
+    return list_of_articles
+
+
 
 if __name__ == "__main__":
     folder = "./CorpusHTMLNoticiasPractica1819"
 
-    listing = os.listdir(folder) # List all files in 'folder' directory
-    list_of_Tika_objs = parse_all_docs(listing, folder) # Parse with Tika all files and return list of objects
+    # List all files in 'folder' directory
+    listing = os.listdir(folder)
+    listing.sort()
+    # Parse all news and return a list of <Article> objects with methods like 'title' , 'content' , etc.
+    articles_list = read_news_content(listing, folder)
 
-################ spaCy ###################
-    parse_texts_spaCy(list_of_Tika_objs)
-    raise Exception()
-    # Python: The dir() function returns all properties and methods of the specified object, without the values.
-    print(dir(article))
-    print("***********************")
-    print(article)
-    print("***********************")
-    print('Entities number: ', len(article.ents))
-
-
-    def print_entities(entities):
-        for entity in entities:
-            print(entity)
-
-
-    labels = [x.label_ for x in article.ents]
-    # Python: A Counter is a dict subclass for counting hashable objects
-    number = collections.Counter(labels)
-    print('Entity labels: ', number)
-
-    entities_map = {}
-    for key in number.keys():
-        entities_map[key] = []
-
-    for entity in article.ents:
-        list = entities_map.get(entity.label_)
-        list.append(entity)
-        entities_map[key] = list
-
-    for key in entities_map.keys():
-        print(key, ' ------------------------ ENTITIES ')
-        for entity in entities_map.get(key):
-            print(entity)
-        print()
-
-    print("*******************************")
-    # Five most common entities
-    print('Five most common entities')
-    items = [x.text for x in article.ents]
-    print(collections.Counter(items).most_common(5))
-
-
-
-    #print("Prepared ", len(texts), " documents...")
-    #print("They can be accessed using texts[0] - texts[" + str(len(texts)-1) + "]")
-#
-    #distanceFunction ="cosine"
-    ##distanceFunction = "euclidean"
-    #test = cluster_texts(texts,4,distanceFunction)
-    #print("test: ", test)
-    ## Gold Standard
-    #reference =[0, 4, 2, 2, 2, 3, 2, 2, 2, 1, 0, 0, 3, 3, 1, 2, 3, 0, 1, 1, 1, 1]
-    #print("reference: ", reference)
-#
-    ## Evaluation
-    #print("rand_score: ", adjusted_rand_score(reference,test))
+    parse_texts_spaCy(articles_list)

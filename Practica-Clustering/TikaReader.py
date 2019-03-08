@@ -7,7 +7,6 @@ class TikaReader:
         # Cliente Tika que utiliza que carga el fichero jar cliente.
         self.tika_client = TikaApp(file_jar="tika-app-1.20.jar")
         self.file_process = file_process
-        self.parsed_file = self.tika_client.extract_all_content(self.file_process,convert_to_obj=value)[0]
         self.language = self.tika_client.detect_language(self.file_process)
     
     # Detector del tipo de contenido MIME.
@@ -27,10 +26,13 @@ class TikaReader:
         return self.parsed_file['X-TIKA:content']
 
     def get_title(self):
-        return self.parsed_file['title']
+        return self.parsed_file['dc:title']
 
     def get_description(self):
         return self.parsed_file['og:description']
     
     def get_keywords(self):
         return self.parsed_file['keywords']
+
+    def set_content(self, text):
+        self.parsed_file['X-TIKA:content'] = text
